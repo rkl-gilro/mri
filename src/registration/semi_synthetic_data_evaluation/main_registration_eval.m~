@@ -1,0 +1,220 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%% Main program for T1 synthetic data evaluation
+%%
+%% NOTE: change line 13 & 18 to change the folder and file names
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% clc;
+close all;
+
+global save_folder
+
+root_name = 'resources/registration/eval/lassalas/';
+
+%% Set up the parameters %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+disp('-----------------------------------')
+disp('--------- Set up parameters -------')
+disp('-----------------------------------')
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%%
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+global deformation_type
+global optimizer
+global t_reg
+global measure_errors_eval
+
+t_reg = 0;
+measure_errors_eval = [];
+
+global lava_flex
+global lava_flex_info
+
+serie = 7;
+
+%% 
+% lava_flex      = double(cellimages2mat(dcmdir.dcmPatient.Study.Series(serie,1).Images));
+%%
+[X, meta] = nrrdread('resources/patients/LASSALAS/NRRD/7 WATERAx Lava_Flex IV.nrrd');
+lava_flex      = double(X(:,:,end:-1:1)); 
+
+lava_flex_info = dcmdir.dcmPatient.Study.Series(serie,1).ImagesInfo;
+
+%% Set up the number of points per intersectin 't', 
+%% 'lambda' for the regularization term
+%% 'nx, ny, nz' for the grid dimensions
+optimizer.t     = 74;
+optimizer.lambda = .01;
+optimizer.nxyz  =  [6 6 6];
+
+global crop_volume
+global crop_rectangle
+
+crop_volume = 1;
+crop_rectangle = [];
+
+if ~exist('set_up','var')
+    set_volumes;
+end
+
+% Define the deformation: rigid or nonrigid
+deformation_type.rigid    = 0;
+deformation_type.nonrigid = 1;
+
+if deformation_type.rigid
+    a = -3;
+    b =  3;
+    
+    trans1 = a + (b-a).*rand(3,30);
+    trans2 = a + (b-a).*rand(3,30);
+    trans3 = a + (b-a).*rand(3,30);
+    
+    a = -.1;
+    b =  .1;
+    
+    sigma1 = a + (b-a).*rand(3,30);
+    sigma2 = a + (b-a).*rand(3,30);
+    sigma3 = a + (b-a).*rand(3,30);
+    
+    range = 1:size(sigma1,2);
+end
+
+if deformation_type.nonrigid
+    
+    deformation_type.mag_def = [3.*ones(1,30) 5.*ones(1,30) 7.*ones(1,30) 9.*ones(1,30) 11.*ones(1,30) 13.*ones(1,30) 15.*ones(1,30) 17.*ones(1,30) 19.*ones(1,30)];
+    range = 1:size(deformation_type.mag_def,2);
+    
+end
+
+for iter = 150:length(range)
+    %% Apply deformation to the volumes %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    disp('-----------------------------------')
+    disp('--------- Apply Deformation   -----')
+    disp('-----------------------------------')
+    
+    if deformation_type.rigid
+        
+        deformation_type.angles_ax       = [0 0 sigma1(1,iter)];%theta_x, theta_y, theta_z
+        deformation_type.translation_ax  = trans1(:,2)'; %
+        
+        deformation_type.angles_sag      = [sigma2(1,iter) 0 0];% theta_x, theta_y, theta_z
+        deformation_type.translation_sag = trans2(:,2)'; %
+        
+        deformation_type.angles_cor      = [sigma3(1,iter) 0 0];% theta_x, theta_y, theta_z
+        deformation_type.translation_cor = trans3(:,2)'; %
+        
+        disp(['First:', num2str(sigma1(1,iter))])
+        disp(['Second:', num2str(sigma2(1,iter))])
+        disp(['Third:', num2str(sigma3(1,iter))])
+        disp(['Second:', num2str(sum(abs(sigma2(:,iter))))])
+        disp(['Third:', num2str(sum(abs(sigma3(:,iter))))])
+        
+    end
+    
+    if deformation_type.nonrigid
+        
+        deformation_type.current_mag_def = deformation_type.mag_def(iter);
+        disp(['Magnitude of deformation', num2str(deformation_type.mag_def(iter))]);
+        
+    end
+
+
+        
+    %% Folder and file name
+    save_folder = strcat(root_name,'def_',num2str(iter),'t', num2str(optimizer.t), '_lambda', num2str(optimizer.lambda), '_nxyz', num2str(optimizer.nxyz(1)));
+    
+    mkdir(save_folder);
+    save_name = strcat(save_folder, '/lassalas.mat');
+    
+    
+    apply_deformation( );
+    
+    %% Select the slices %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    disp('-----------------------------------')
+    disp('----- Select the new slices   -----')
+    disp('-----------------------------------')
+    
+%     optimizer.nxyz  =  iter .* ones(1,3);
+    
+    select_slices( );
+    
+    %% Select the slices %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    disp('-----------------------------------------------')
+    disp('----- Compute the intersections and mesh  -----')
+    disp('-----------------------------------------------')
+    
+    set_intersections( );
+    
+    %% Start the optimization %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    disp('-----------------------------------')
+    disp('--------- Start Optimization  -----')
+    disp('-----------------------------------')
+    
+    %% Using gradient descent
+    optimizer.steepestdescent = 1;
+    optimizer.grad       = 1; %% 0/1 without gradient/provide gradient
+    optimizer.maxiter    = 40; %% maximum of iterations for the optimzer
+    optimizer.checkderiv = 'off'; %% 'on'/'off' check or not the provided gradient with MATLAB one
+    optimizer.tolfun     = 0.01;
+    optimizer.tolx       = 0.01;
+    optimizer.con        = 0; %% 0/1 -> fminunc / fmincon
+    
+    %% Using metaheuristics, differential evolution
+    optimizer.metaheuristic = 0;
+    
+    %% Set the number of views (default 3)
+    optimizer.views         = 3; %% provide the number of views used for the optimization, 2 or 3
+    
+    start_optimization_eval( );
+    
+    %% Calculate the new images from the optimization result
+    
+    disp('--------- Compute the new images and visualization --------------')
+    compute_new_images_eval( );
+    
+    %% Calculate the measurements
+    disp('--------- Compute error measurements --------------')
+    measurements_eval(  );
+    
+    %% Calculate the error in the straightness of intersection lines
+    disp('--------- Calculate the error in the straightness of intersection lines --------------')
+%     [straight_ax_int1, straight_sag_int1, straight_ax_int2, straight_cor_int2, straight_sag_int3, straight_cor_int3] = eval_straight( );
+    
+    %% Calculate the distance from two common intersection lines
+    disp('--------- Calculate the distance from two common intersection lines --------------')
+    [error_int1, error_int2, error_int3] = eval_distance(0);
+    
+    %% Save the output if the name is provided
+    save(save_name, 'source_tri_v', 'target_tri_ax' , 'target_tri_sag', 'target_tri_cor',...
+        'axial_M','axial_M1','sag_M','sag_M1','cor_M','cor_M1', ...
+        'new_axial', 'new_sagittal', 'new_coronal', ...
+        'vol_ax_eval', 'vol_sag_eval' , 'vol_cor_eval',...
+        'vol_ax_eval1', 'vol_sag_eval1' , 'vol_cor_eval1',...
+        'optimizer', 't_reg', 'measure_errors_eval', 'deformation_type',...
+        'var_array1_v', 'var_array2_v', 'var_array3_v',...
+        'var_cell1_v', 'var_cell2_v', 'var_cell3_v', ...
+        'crop_volume', 'crop_rectangle',...
+        'error_int1', 'error_int2', 'error_int3');
+%         'straight_ax_int1', 'straight_sag_int1', 'straight_ax_int2', 'straight_cor_int2', 'straight_sag_int3', 'straight_cor_int3', ...
+         
+        
+    
+    %% Choose the images to visualize, i.e, [9 8 8] corresponds to slice 9 of the axial view,
+    %% slice 8 from sagittal view and slice 8 from coronal one.
+%     show_slices = [19 9 12];
+%     visualization_eval( show_slices );
+    
+    
+    clearvars -global -except save_folder deformation_type optimizer t_reg measure_errors_eval ...
+                              lava_flex lava_flex_info crop_volume crop_rectangle  ...
+                              lava_axM lava_axM_1 lava_sagM lava_sagM_1 lava_corM lava_corM_1 X_ax_v Y_ax_v Z_ax_v ...
+                              X_sag_v Y_sag_v Z_sag_v X_cor_v Y_cor_v Z_cor_v lava_flex_ax lava_flex_sag lava_flex_cor ...
+                              size1 size2 size3
+                      
+%     clearvars -except views dcmdir trans1 trans2 trans3 root_name
+end
+%% Clear workspace      
+clear global
+clearvars -except views dcmdir

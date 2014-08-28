@@ -1,0 +1,5 @@
+src/homology/*
+src/surface_mesh/Export(IBS_Fitting)/*
+src/matitk/*
+src/regression/*
+
